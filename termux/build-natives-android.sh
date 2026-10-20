@@ -3,8 +3,12 @@
 # with the NDK, in GitHub Actions — an EXPERIMENT (user-approved 2026-10-20):
 #
 #   sqlite3 5.1.7    N-API module (ABI-independent once built) — expected OK.
-#   isolated-vm 7.0.1 raw V8 addon, tied to Node ABI 137 (Node 24) — the
-#                    hard one; no official Android support.
+#   isolated-vm 7.0.1 raw V8 addon, V8-ABI-bound to the target Node below
+#                    (NODE_TARGET) — the hard one; no official Android
+#                    support. Originally built for Node 24 (runs #1–#4);
+#                    retargeted to Node 26 on 2026-10-21 because Termux's
+#                    nodejs package moved to v26.4.0 and the device can no
+#                    longer install Node 24.
 #
 # Both are attempted even if one fails; results land in BUILD-RESULTS.txt
 # and every produced .node is ELF-checked (must be ARM aarch64 and link
@@ -31,7 +35,11 @@ export AR="$NDK_BIN/llvm-ar"
 export RANLIB="$NDK_BIN/llvm-ranlib"
 export STRIP="$NDK_BIN/llvm-strip"
 
-NODE_TARGET="$(node -v | sed 's/^v//')"
+# Pin the target Node explicitly: node-gyp downloads THIS version's
+# headers (--dist-url below), and isolated-vm must match the device's V8
+# ABI exactly. The device runs Termux nodejs v26.4.0 (checked 2026-10-21).
+# The CI host's own Node version is irrelevant to the target.
+NODE_TARGET="26.4.0"
 echo "Host node: $(node -v) | gyp target: $NODE_TARGET | CC: $CC"
 {
   echo "n8n Android natives cross-compile — $(date -u +%FT%TZ)"
