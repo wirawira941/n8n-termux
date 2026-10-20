@@ -1,0 +1,56 @@
+name: Cross-compile n8n natives for Android (NDK)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a Release with this tag (leave empty to only build an artifact)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout this port repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Download Android NDK r28c
+        run: |
+          cd /tmp
+          curl -sL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r28c-linux.zip
+          unzip -q ndk.zip
+          echo "NDK_ROOT=/tmp/android-ndk-r28c" >> "$GITHUB_ENV"
+
+      - name: Cross-compile natives (sqlite3 + isolated-vm)
+        run: bash termux/build-natives-android.sh
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: n8n-android-natives
+          path: |
+            n8n-android-natives.zip
+            out/
+          retention-days: 90
+
+      - name: Publish release
+        if: inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: n8n 2.44.4 Android natives (Termux experiment)
+          files: n8n-android-natives.zip
+          body: |
+            Experimental NDK cross-builds of n8n 2.44.4's native dependencies
+            (sqlite3, isolated-vm) for Android aarch64/bionic. See
+            out/BUILD-RESULTS.txt in the artifact for which modules passed
+            the ELF checks. Not yet verified on a device.
