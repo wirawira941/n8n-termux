@@ -90,10 +90,13 @@ GYP_FLAGS="--target=$NODE_TARGET --arch=arm64 --dist-url=https://nodejs.org/dist
 # sqlite3: node-pre-gyp v2 chokes on sqlite3 5.1.7's binary config
 # (validate_config demands binary.{module_name,module_path,host}), so drive
 # node-gyp directly with the defines node-pre-gyp would normally set.
+# The bare tarball has no node_modules, and binding.gyp requires
+# node-addon-api at configure time — install deps with scripts disabled
+# first (run #2 died in gyp configure: require('node-addon-api') failed).
 # sqlite3 builds its N-API binary (ABI-independent) from the bundled
 # sqlite-autoconf tarball in deps/.
 attempt "sqlite3" "sqlite3@$SQLITE_VER" \
-  "npx --yes node-gyp rebuild $GYP_FLAGS -- -Dmodule_name=node_sqlite3 -Dmodule_path=\$PWD/lib/binding/napi-v6-android-arm64"
+  "npm install --ignore-scripts --no-audit --no-fund; npx --yes node-gyp rebuild $GYP_FLAGS -- -Dmodule_name=node_sqlite3 -Dmodule_path=\$PWD/lib/binding/napi-v6-android-arm64"
 
 # isolated-vm: plain node-gyp.
 attempt "isolated-vm" "isolated-vm@$IVM_VER" \
