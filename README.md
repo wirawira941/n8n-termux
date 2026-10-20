@@ -17,11 +17,11 @@ Both native modules were cross-compiled for Android with the NDK in
 GitHub Actions and **passed** the ELF checks (aarch64, bionic linkage,
 no `libc.so.6`); see `BUILD-RESULTS.txt` in the release asset. They are
 published in the
-[v2.44.4-termux.1 release](https://github.com/wirawira941/n8n-termux/releases/tag/v2.44.4-termux.1),
+[v2.44.4-termux.2 release](https://github.com/wirawira941/n8n-termux/releases/tag/v2.44.4-termux.2),
 so the phone never has to compile anything:
 
 1. Download `install-n8n-termux.sh` and run it in Termux.
-2. It installs `nodejs` (Node 24) + `libc++` (both `.node` files need
+2. It installs `nodejs` (Node 26; `isolated-vm` is V8-ABI-bound to it) + `libc++` (both `.node` files need
    `libc++_shared.so`), installs `n8n@2.44.4` globally with
    `--ignore-scripts`, downloads the natives zip from the release, and
    places the binaries at the exact paths their loaders search.

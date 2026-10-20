@@ -9,8 +9,10 @@
 # Both need libc++_shared.so (Termux `libc++` package).
 #
 # How it works:
-#   1. Installs Termux packages: nodejs (Node 24 — NOT nodejs-lts, which is
-#      Node 22; isolated-vm is V8-ABI-bound to Node 24), libc++, curl, unzip.
+#   1. Installs Termux packages: nodejs (Node 26; isolated-vm is
+#      V8-ABI-bound to Node 26 — see termux/build-natives-android.sh,
+#      which pins node-gyp's target to the device's Node), libc++, curl,
+#      unzip.
 #   2. npm install -g n8n@2.44.4 --ignore-scripts, so npm does NOT try to
 #      build/download the natives itself.
 #   3. Downloads the natives zip from this repo's GitHub Release and drops
@@ -33,7 +35,7 @@
 
 set -u
 N8N_VER="2.44.4"
-NATIVES_URL="https://github.com/wirawira941/n8n-termux/releases/download/v2.44.4-termux.1/n8n-android-natives.zip"
+NATIVES_URL="https://github.com/wirawira941/n8n-termux/releases/download/v2.44.4-termux.2/n8n-android-natives.zip"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -49,10 +51,12 @@ pkg install -y nodejs libc++ curl unzip || {
   echo "ERROR: pkg install failed." >&2; exit 1; }
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [ "$NODE_MAJOR" != "24" ]; then
-  echo "ERROR: need Node 24, found Node $NODE_MAJOR ($(command -v node))." >&2
-  echo "The isolated-vm binary is built for Node 24's V8 ABI. If you have" >&2
-  echo "nodejs-lts (Node 22) installed, remove it and install 'nodejs'." >&2
+if [ "$NODE_MAJOR" != "26" ]; then
+  echo "ERROR: need Node 26, found Node $NODE_MAJOR ($(command -v node))." >&2
+  echo "The isolated-vm binary is built for Node 26's V8 ABI (release" >&2
+  echo "v2.44.4-termux.2). Termux's 'nodejs' package is currently Node 26;" >&2
+  echo "if you have nodejs-lts installed instead, remove it and install" >&2
+  echo "'nodejs'." >&2
   exit 1
 fi
 echo "== Node $(node --version) OK"
