@@ -1,83 +1,142 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# n8n 2.44.4 on Termux (Android aarch64) — installer.
+# install-n8n-termux.sh — n8n 2.44.4 on Termux (Android aarch64), using
+# PREBUILT native modules (sqlite3 + isolated-vm) cross-compiled with the
+# NDK in GitHub Actions. No on-device compilation.
 #
-# n8n ships a prebuilt dist and an official CLI, so there is nothing to
-# build in CI. The work happens here: two native deps have NO Android
-# prebuilds and compile on-device during npm install —
-#   sqlite3      (small C compile, usually a few minutes)
-#   isolated-vm  (large C++ compile against V8 headers; the long pole,
-#                 can take a long while and most of the RAM)
-# Keep the phone plugged in and be patient on the install step.
+# Why prebuilt: n8n's two native deps ship no Android binaries and would
+# otherwise compile from source on the phone (isolated-vm is a large V8
+# build). The CI-built .node files are aarch64/bionic and pass ELF checks.
+# Both need libc++_shared.so (Termux `libc++` package).
+#
+# How it works:
+#   1. Installs Termux packages: nodejs (Node 24 — NOT nodejs-lts, which is
+#      Node 22; isolated-vm is V8-ABI-bound to Node 24), libc++, curl, unzip.
+#   2. npm install -g n8n@2.44.4 --ignore-scripts, so npm does NOT try to
+#      build/download the natives itself.
+#   3. Downloads the natives zip from this repo's GitHub Release and drops
+#      the .node files at the exact paths the loaders search:
+#        sqlite3:     <pkg>/build/Release/node_sqlite3.node
+#                     <pkg>/lib/binding/napi-v6-android-arm64/node_sqlite3.node
+#                     (loader is the `bindings` package)
+#        isolated-vm: <pkg>/build/Release/isolated_vm.node
+#                     (loader is node-gyp-build's build/Release fallback)
+#      Every sqlite3 / isolated-vm directory found under the global n8n
+#      tree gets a copy, so npm hoisting differences don't matter.
+#   4. Load-tests both .node files with process.dlopen, then runs
+#      `n8n --version` and a bounded editor smoke test on port 5678.
+#
+# Fallback: install-n8n-termux-ondevice-compile.sh compiles the natives
+# on the phone instead (slow, needs the Termux toolchain).
 #
 # Usage:  bash install-n8n-termux.sh
-#         SKIP_SMOKE=1 bash install-n8n-termux.sh   (skip the smoke test)
+#         SKIP_SMOKE=1 bash install-n8n-termux.sh   (skip the server test)
+
 set -u
+N8N_VER="2.44.4"
+NATIVES_URL="https://github.com/wirawira941/n8n-termux/releases/download/v2.44.4-termux.1/n8n-android-natives.zip"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
-N8N_VERSION="2.44.4"
-PORT="${N8N_PORT:-5678}"
+echo "== n8n $N8N_VER for Termux (prebuilt natives)"
 
-echo "== n8n $N8N_VERSION Termux installer =="
-
-echo "-- Installing Termux packages (nodejs, python, clang, make)..."
-pkg install -y nodejs python clang make || {
-  echo "GAGAL memasang paket Termux. Coba 'pkg update' dulu, lalu jalankan ulang."
-  exit 1
-}
-
-NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)"
-echo "-- Node version: $(node -v 2>/dev/null)"
-if [ "$NODE_MAJOR" -lt 24 ]; then
-  echo "n8n $N8N_VERSION butuh Node >= 24, terpasang v$NODE_MAJOR."
-  echo "Paket 'nodejs' Termux adalah yang benar (bukan 'nodejs-lts' yang masih 22)."
-  echo "Jalankan: pkg install -y nodejs   lalu jalankan ulang installer ini."
+if [ -z "${PREFIX:-}" ]; then
+  echo "ERROR: \$PREFIX is not set — run this inside Termux." >&2
   exit 1
 fi
 
-# Keep native builds from eating the phone: bound job parallelism.
-export npm_config_jobs=2
-export MAKEFLAGS="-j2"
+echo "== Installing Termux packages: nodejs, libc++, curl, unzip"
+pkg install -y nodejs libc++ curl unzip || {
+  echo "ERROR: pkg install failed." >&2; exit 1; }
 
-echo "-- Installing n8n@$N8N_VERSION globally (native modules compile here;"
-echo "   sqlite3 sebentar, isolated-vm lama — biarkan saja, jangan ditutup)..."
-if ! npm install -g "n8n@$N8N_VERSION"; then
-  echo ""
-  echo "npm install GAGAL. Penyebab paling mungkin: compile sqlite3 atau"
-  echo "isolated-vm. Tempelkan ~30 baris terakhir output di atas ke Muse"
-  echo "supaya bisa didiagnosis (ada jalur cadangan untuk keduanya)."
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [ "$NODE_MAJOR" != "24" ]; then
+  echo "ERROR: need Node 24, found Node $NODE_MAJOR ($(command -v node))." >&2
+  echo "The isolated-vm binary is built for Node 24's V8 ABI. If you have" >&2
+  echo "nodejs-lts (Node 22) installed, remove it and install 'nodejs'." >&2
+  exit 1
+fi
+echo "== Node $(node --version) OK"
+
+echo "== Installing n8n@$N8N_VER globally (install scripts disabled)"
+npm install -g "n8n@$N8N_VER" --ignore-scripts --no-audit --no-fund || {
+  echo "ERROR: npm install failed." >&2; exit 1; }
+
+GROOT="$PREFIX/lib/node_modules/n8n"
+[ -d "$GROOT" ] || { echo "ERROR: $GROOT not found after install." >&2; exit 1; }
+
+echo "== Downloading prebuilt Android natives"
+curl -fL -o "$WORK/natives.zip" "$NATIVES_URL" || {
+  echo "ERROR: download failed: $NATIVES_URL" >&2; exit 1; }
+unzip -o -q "$WORK/natives.zip" -d "$WORK/natives" || {
+  echo "ERROR: could not unzip the natives package." >&2; exit 1; }
+
+SQLITE_NODE="$(find "$WORK/natives" -name 'sqlite3.node' | head -1)"
+IVM_NODE="$(find "$WORK/natives" -name 'isolated-vm.node' -o -name 'isolated_vm.node' | head -1)"
+if [ -z "$SQLITE_NODE" ] || [ -z "$IVM_NODE" ]; then
+  echo "ERROR: natives zip did not contain both .node files." >&2
+  find "$WORK/natives" -type f >&2
   exit 1
 fi
 
-echo "-- Terpasang: $(n8n --version 2>/dev/null || echo '(n8n --version gagal)')"
+echo "== Placing native modules"
+placed_s=0
+while IFS= read -r d; do
+  mkdir -p "$d/build/Release" "$d/lib/binding/napi-v6-android-arm64"
+  cp "$SQLITE_NODE" "$d/build/Release/node_sqlite3.node"
+  cp "$SQLITE_NODE" "$d/lib/binding/napi-v6-android-arm64/node_sqlite3.node"
+  echo "   sqlite3     -> $d"
+  placed_s=$((placed_s + 1))
+done < <(find "$GROOT" -type d -name sqlite3 -path '*node_modules*')
+placed_i=0
+while IFS= read -r d; do
+  mkdir -p "$d/build/Release"
+  cp "$IVM_NODE" "$d/build/Release/isolated_vm.node"
+  echo "   isolated-vm -> $d"
+  placed_i=$((placed_i + 1))
+done < <(find "$GROOT" -type d -name isolated-vm -path '*node_modules*')
+if [ "$placed_s" = "0" ] || [ "$placed_i" = "0" ]; then
+  echo "ERROR: placed sqlite3=$placed_s isolated-vm=$placed_i — a module dir is missing." >&2
+  exit 1
+fi
 
-if [ "${SKIP_SMOKE:-0}" = "1" ]; then
-  echo "-- Smoke test dilewati (SKIP_SMOKE=1)."
-else
-  echo "-- Smoke test: menyalakan server di port $PORT (maks ~90 detik)..."
-  LOG="$(mktemp)"
-  N8N_PORT="$PORT" n8n start >"$LOG" 2>&1 &
-  SRV=$!
-  OK=0
-  for i in $(seq 1 30); do
-    sleep 3
-    CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" 2>/dev/null || echo 000)"
-    if [ "$CODE" = "200" ]; then OK=1; break; fi
-    kill -0 "$SRV" 2>/dev/null || break
-  done
-  kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
-  if [ "$OK" = "1" ]; then
-    echo "   SMOKE TEST LULUS: editor n8n menjawab HTTP 200 di port $PORT."
+echo "== Load-testing the native modules"
+fail=0
+while IFS= read -r f; do
+  if node -e 'const m={exports:{}};process.dlopen(m,process.argv[1])' "$f" 2>"$WORK/dlopen.err"; then
+    echo "   OK   $f"
   else
-    echo "   SMOKE TEST GAGAL — 25 baris terakhir log server:"
-    tail -n 25 "$LOG"
-    echo "   (Tempelkan log ini ke Muse untuk diagnosis.)"
+    echo "   FAIL $f" >&2
+    cat "$WORK/dlopen.err" >&2
+    fail=1
   fi
-  rm -f "$LOG"
+done < <(find "$GROOT" \( -name node_sqlite3.node -o -name isolated_vm.node \) -path '*build/Release*')
+[ "$fail" = "0" ] || { echo "ERROR: a native module failed to load (see above)." >&2; exit 1; }
+
+echo "== n8n version"
+n8n --version || { echo "ERROR: n8n --version failed." >&2; exit 1; }
+
+if [ "${SKIP_SMOKE:-0}" != "1" ]; then
+  echo "== Smoke test: starting n8n on http://127.0.0.1:5678 (max ~90 s)"
+  LOG="$WORK/n8n-smoke.log"
+  ( n8n start >"$LOG" 2>&1 & echo $! >"$WORK/n8n.pid" )
+  ok=0
+  for _ in $(seq 1 45); do
+    sleep 2
+    if curl -sf -o /dev/null "http://127.0.0.1:5678/"; then ok=1; break; fi
+    kill -0 "$(cat "$WORK/n8n.pid")" 2>/dev/null || break
+  done
+  kill "$(cat "$WORK/n8n.pid" 2>/dev/null)" 2>/dev/null
+  sleep 1
+  kill -9 "$(cat "$WORK/n8n.pid" 2>/dev/null)" 2>/dev/null
+  if [ "$ok" = "1" ]; then
+    echo "   Smoke test PASSED — the editor answered on port 5678."
+  else
+    echo "   Smoke test FAILED — last log lines:" >&2
+    tail -n 30 "$LOG" >&2
+    exit 1
+  fi
 fi
 
 echo ""
-echo "Selesai. Menjalankan n8n:"
-echo "  n8n            (atau: n8n start)"
-echo "Lalu buka http://localhost:$PORT di browser HP dan buat akun owner."
-echo "Data & workflow tersimpan di ~/.n8n (SQLite)."
-echo "Kalau mau diakses dari laptop di hotspot yang sama, jalankan:"
-echo "  N8N_HOST=0.0.0.0 n8n   — pastikan akun owner sudah dibuat dulu."
+echo "Done. Run n8n with:  n8n start"
+echo "Then open http://localhost:5678 in your browser (data lives in ~/.n8n)."
