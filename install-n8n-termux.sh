@@ -62,6 +62,11 @@ fi
 echo "== Node $(node --version) OK"
 
 echo "== Installing n8n@$N8N_VER globally (install scripts disabled)"
+# Clean any previous global tree first: a leftover partial install can
+# leave a FILE where npm expects a directory, and npm then dies with
+# "ENOTDIR: not a directory, mkdir .../n8n/node_modules/<pkg>" (seen on
+# device 2026-10-21). A from-scratch tree avoids the whole class.
+rm -rf "$PREFIX/lib/node_modules/n8n" "$PREFIX"/lib/node_modules/.n8n-*
 npm install -g "n8n@$N8N_VER" --ignore-scripts --no-audit --no-fund || {
   echo "ERROR: npm install failed." >&2; exit 1; }
 
